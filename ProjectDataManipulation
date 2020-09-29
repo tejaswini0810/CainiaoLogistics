@@ -1,0 +1,190 @@
+library(dplyr)
+library(data.table)
+library(stringr)
+library(lubridate)
+library(tidyr)
+library(ggplot2)
+
+# ZappTech Case
+delivDF = fread(file = "Zapp_Deliv.csv")
+prodCatDF = fread(file = "Zapp_ProdLine.csv")
+str(delivDF)
+str(prodCatDF)
+# In delivDF, plannedShipDate and actualShipDate should be "date" rather than "character"
+# Why? we may want to do something like: actualShipDate - plannedShipDate
+# We can do this easily by using "lubridate" pacakge
+# Let's see what lubridate package can do
+this_day = today()
+
+year(this_day)
+month(this_day)
+day(this_day)
+
+yday(this_day) # What is this?
+mday(this_day) # What is this?
+wday(this_day) # What is this?
+
+wday(this_day, label = TRUE)
+as.character(wday(this_day, label = TRUE))
+as.character(wday(this_day, label = TRUE, abbr=FALSE))
+
+delivDF$plannedShipDate = mdy(delivDF$plannedShipDate)
+delivDF$actualShipDate = mdy(delivDF$actualShipDate)
+# We can do some date arithmetic
+# Take the first data point in the delivery data frame and calculate the difference in dates
+delivDF$actualShipDate[1] - delivDF$plannedShipDate[1]
+# the object above is called a difftime object.  
+# To ensure that you are working with "days", do the following conversion.
+as.numeric(delivDF$actualShipDate[1] - delivDF$plannedShipDate[1], units = "days")
+
+# You can then use this difference for comparison
+(delivDF$actualShipDate[1] - delivDF$plannedShipDate[1]) > 0 # Late?
+(delivDF$actualShipDate[1] - delivDF$plannedShipDate[1]) == 0 # On time?
+(delivDF$actualShipDate[1] - delivDF$plannedShipDate[1]) < 0 # Early?
+
+delivDF = delivDF %>% mutate(daysLate = as.numeric(actualShipDate - plannedShipDate, units = "days")) %>%  
+  mutate(lateFlag = ifelse(daysLate > 0, 1, 0))
+# Can we calculate late %?
+df = delivDF %>% summarize(pctLate=mean(lateFlag))
+100*as.numeric(df) # observation unit should be "order" not "part"
+df = delivDF %>% select(deliveryID,lateFlag) %>% distinct() %>% summarize(pctLate=mean(lateFlag))
+100*as.numeric(df)
+
+# Now, let's learn about JOIN
+# A toy example for mutating joins
+# Let's create simple Data Frames
+df1 <- data_frame(x = c(1, 2), y = 2:1)
+df2 <- data_frame(x = c(1, 3), a = 10, b = "a")
+df1
+df2
+
+# Inner Joins
+df1 %>% inner_join(df2)
+# Left Joins
+df1 %>% left_join(df2) # Same as left_join(df1,df2)
+# Full Joins
+df1 %>% full_join(df2)
+
+# Let's come back to the ZappTech case
+# Getting Product Delivery Data and Product Category data in the same place
+fullDF = delivDF %>% left_join(prodCatDF) # Why the function decided to join by partID?
+fullDF = delivDF %>% left_join(prodCatDF, by="partID")
+fullDF
+# Watch out for missing data!!
+sum(is.na(fullDF$prodCategory))
+fullDF = fullDF %>% filter(!is.na(prodCategory))
+
+# Let's answer Q2 first
+# How often do orders include products from other product categories?
+tempdat = fullDF %>% group_by(deliveryID,prodCategory) %>% summarize(numItems = n())
+tempdat %>% group_by(deliveryID) %>% summarize(numCategories = n()) %>% 
+  mutate(multiCatFlag = ifelse(numCategories == 1,0,1)) %>% summarize(MultiCatOrders = mean(multiCatFlag))
+
+# Now, answer Q1
+# Does on-time shipments percentage vary across product categories?
+fullDF %>% select(deliveryID,lateFlag,prodCategory) %>% distinct() %>% 
+  group_by(prodCategory) %>% summarize(onTimePct = 1-mean(lateFlag))
+# or, you can do something like:
+fullDF %>% select(deliveryID,plannedShipDate,actualShipDate,prodCategory) %>% distinct() %>% 
+  mutate(onTimeFlag = ifelse(actualShipDate > plannedShipDate,0,1)) %>% 
+  group_by(prodCategory) %>% summarize(onTimePct = mean(onTimeFlag))
+
+# Machines & SpareParts need to improve their delivery
+# Let' dig deeper.
+# Is this problem caused by "inter-department communication" issue as stated by the CEO?
+
+# Further Analysis:
+# Compare above number with the below
+# (onTime percentage for single-category orders only)
+oneCatDelivIDs = tempdat %>% group_by(deliveryID) %>% 
+  summarize(numCategories = n()) %>% mutate(multiCatFlag = ifelse(numCategories == 1,0,1)) %>% 
+  filter(multiCatFlag == 0) %>% select(deliveryID) 
+
+oneCatDelivIDs %>% left_join(fullDF) %>% select(deliveryID,lateFlag,prodCategory) %>% distinct() %>% 
+  group_by(prodCategory) %>% summarize(onTimePct = 1-mean(lateFlag))
+# or you can do it as below
+fullDF %>% filter(deliveryID%in%oneCatDelivIDs$deliveryID) %>%
+  select(deliveryID,lateFlag,prodCategory) %>% distinct() %>% 
+  group_by(prodCategory) %>% summarize(onTimePct = 1-mean(lateFlag))
+
+# Compare with previous results: How would you interpret the results?
+fullDF %>% select(deliveryID,lateFlag,prodCategory) %>% distinct() %>% 
+  group_by(prodCategory) %>% summarize(onTimePct = 1-mean(lateFlag))
+
+##########################################
+#### PROJECT: Exploratory Analysis
+
+odat = fread("CourseProject_Order.csv")
+ldat = fread("CourseProject_Logistics.csv")
+mdat = fread("CourseProject_Merchant.csv")
+gc()
+
+head(odat)
+head(ldat)
+head(mdat)
+
+## Converting to Time
+odat$day = ymd(odat$day)
+ldat$day = ymd(ldat$day)
+mdat$day = ymd(mdat$day)
+odat$pay_timestamp = ymd_hms(odat$pay_timestamp)
+ldat$timestamp = ymd_hms(ldat$timestamp)
+
+## Merchant Data
+unique(mdat$merchant_id)
+length(unique(mdat$merchant_id))
+
+result = mdat %>% group_by(merchant_id) %>% summarize(avguv=mean(pcuv)) %>% arrange(desc(avguv))
+
+m42 = mdat %>% filter(merchant_id==42) %>% select(day,avgLogisticScore,avgServiceQualityScore) %>% arrange(day)
+qplot(m42$day,m42$avgLogisticScore)
+qplot(m42$day,m42$avgServiceQualityScore)
+m323 = mdat %>% filter(merchant_id==323) %>% select(day,avgLogisticScore,avgServiceQualityScore) %>% arrange(day)
+qplot(m323$day,m323$avgLogisticScore)
+qplot(m323$day,m323$avgServiceQualityScore)
+
+odat %>% filter(merchant_id==42) %>% group_by(if_cainiao) %>% summarize(norder=n_distinct(order_id))
+odat %>% filter(merchant_id==323) %>% group_by(if_cainiao) %>% summarize(norder=n_distinct(order_id))
+# Two major merchants show very different pattern
+
+# Now, does order fulfillment time decrease when we use Cainiao service?
+
+# Fulfillment time = SIGNED (in logistics data) - pay_timestampe (in order data)
+signed_data = ldat %>% filter(action=="SIGNED") %>% select(order_id,timestamp)
+colnames(signed_data) = c("order_id","SIGNED_time")
+head(signed_data)
+
+odat = odat %>% left_join(signed_data)
+head(odat)
+odat = odat %>% mutate(totaltime = as.numeric(SIGNED_time-pay_timestamp)/3600) # Default: second --> change it to hours
+
+# Now, let's compare
+odat %>% group_by(if_cainiao) %>% summarize(avgTotalTime=mean(totaltime)) # about 10 hours faster!
+
+# But... really? 10 hours?
+filtered_odat = odat %>% filter(promise==0)
+filtered_odat %>% group_by(if_cainiao) %>% summarize(avgTotalTime=mean(totaltime)) # Still faster!
+
+# Let's look deeper
+odat %>% group_by(if_cainiao,promise) %>% summarize(norder=n_distinct(order_id)) # Hmm!
+
+#stigate
+lcdat = ldat %>% select(order_id,logistic_company_id) %>% distinct()
+result = lcdat %>% group_by(logistic_company_id) %>% summarize(norder=n_distinct(order_id)) %>% arrange(desc(norder))
+sum(result$norder) # the first two LCs cover 74% of total orders! (we have 38 LCs)
+result = result %>% mutate(LCsize=ifelse(norder>200000,"Large","Small"))
+
+odat = odat %>% left_join(lcdat)
+odat = odat %>% left_join(result)
+head(odat)
+
+odat %>% group_by(LCsize,if_cainiao) %>% summarize(Avgtotaltime=mean(totaltime)) # 10 hrs vs. 7.6 hrs
+
+last_city = ldat %>% filter(action=="SIGNED") %>% select(order_id,city_id)
+result = last_city %>% group_by(city_id) %>% summarize(norder=n_distinct(order_id)) %>% arrange(desc(norder))
+last_city = last_city %>% mutate(Citysize = ifelse(city_id==234|city_id==133,"BigCity","SmallCity"))
+odat = odat %>% left_join(last_city)
+
+odat %>% group_by(LCsize,Citysize,if_cainiao) %>% summarize(Avgtotaltime=mean(totaltime)) # BigCity SmallLC case!!
+odat %>% group_by(LCsize,Citysize,if_cainiao) %>% summarize(norder=n_distinct(order_id)) # Enough data points
+
